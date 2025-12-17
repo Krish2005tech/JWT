@@ -2,15 +2,16 @@ import React, { useState, useEffect } from 'react';
 import { Copy, Sun, Moon, Clock } from 'lucide-react';
 
 const JWTDecoder = () => {
-  const [jwt, setJwt] = useState('');
-  const [header, setHeader] = useState('');
-  const [payload, setPayload] = useState('');
-  const [signature, setSignature] = useState('');
-  const [secret, setSecret] = useState('');
-  const [validationState, setValidationState] = useState('invalid'); // invalid, unverified, verified
+  const [jwt, setJwt] = useState('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiYWRtaW4iOnRydWUsImlhdCI6MTUxNjIzOTAyMn0.KMUFsIDTnFmyG3nMiGM6H9FNFUROf3wh7SmqJp-QV30');
+  const [header, setHeader] = useState(JSON.stringify({ alg: 'HS256', typ: 'JWT' }, null, 2));
+  const [payload, setPayload] = useState(JSON.stringify({ sub: '1234567890', name: 'John Doe', admin: true, iat: 1516239022 }, null, 2));
+  const [signature, setSignature] = useState('KMUFsIDTnFmyG3nMiGM6H9FNFUROf3wh7SmqJp-QV30');
+  const [secret, setSecret] = useState('a-string-secret-at-least-256-bits-long');
+  const [validationState, setValidationState] = useState('verified'); // invalid, unverified, verified
   const [darkMode, setDarkMode] = useState(true);
   const [timeRemaining, setTimeRemaining] = useState(null);
   const [copied, setCopied] = useState('');
+  const [showGenerateSuccess, setShowGenerateSuccess] = useState(false);
 
   // Base64URL decode
   const base64UrlDecode = (str) => {
@@ -71,7 +72,28 @@ const JWTDecoder = () => {
     }
   };
 
-  // Encode JWT from parts
+  // Encode JWT from parts WITHOUT signature (for real-time updates)
+  const encodeJWTWithoutSignature = () => {
+    try {
+      const headerObj = JSON.parse(header);
+      const payloadObj = JSON.parse(payload);
+      
+      const encodedHeader = base64UrlEncode(JSON.stringify(headerObj));
+      const encodedPayload = base64UrlEncode(JSON.stringify(payloadObj));
+      
+      const newJwt = `${encodedHeader}.${encodedPayload}.${signature}`;
+      setJwt(newJwt);
+      
+      // When header/payload changes, signature becomes unverified
+      if (validationState === 'verified') {
+        setValidationState('unverified');
+      }
+    } catch (e) {
+      console.error('Encoding error:', e);
+    }
+  };
+
+  // Encode JWT from parts (only called when Generate button is clicked)
   const encodeJWT = async () => {
     try {
       const headerObj = JSON.parse(header);
@@ -80,7 +102,7 @@ const JWTDecoder = () => {
       const encodedHeader = base64UrlEncode(JSON.stringify(headerObj));
       const encodedPayload = base64UrlEncode(JSON.stringify(payloadObj));
       
-      let newSignature = signature;
+      let newSignature = '';
       
       // If secret is provided, generate signature
       if (secret && headerObj.alg) {
@@ -109,18 +131,64 @@ const JWTDecoder = () => {
           
           newSignature = signatureBase64;
           setSignature(signatureBase64);
-          setValidationState('verified');
         }
       }
       
       const newJwt = `${encodedHeader}.${encodedPayload}.${newSignature}`;
       setJwt(newJwt);
       
-      if (!secret && newSignature) {
-        setValidationState('unverified');
-      }
+      // Show success message
+      setShowGenerateSuccess(true);
+      setTimeout(() => setShowGenerateSuccess(false), 3000);
     } catch (e) {
       console.error('Encoding error:', e);
+    }
+  };
+
+  // Verify signature with secret
+  const verifySignature = async () => {
+    if (!secret || !jwt || validationState === 'invalid') {
+      setValidationState('unverified');
+      return;
+    }
+
+    try {
+      const parts = jwt.split('.');
+      if (parts.length !== 3) return;
+
+      const headerObj = JSON.parse(base64UrlDecode(parts[0]));
+      const data = `${parts[0]}.${parts[1]}`;
+      const existingSignature = parts[2];
+
+      if (headerObj.alg === 'HS256') {
+        const encoder = new TextEncoder();
+        const keyData = encoder.encode(secret);
+        const messageData = encoder.encode(data);
+        
+        const cryptoKey = await crypto.subtle.importKey(
+          'raw',
+          keyData,
+          { name: 'HMAC', hash: 'SHA-256' },
+          false,
+          ['sign']
+        );
+        
+        const signatureBuffer = await crypto.subtle.sign('HMAC', cryptoKey, messageData);
+        const signatureArray = Array.from(new Uint8Array(signatureBuffer));
+        const calculatedSignature = btoa(String.fromCharCode(...signatureArray))
+          .replace(/\+/g, '-')
+          .replace(/\//g, '_')
+          .replace(/=/g, '');
+        
+        if (calculatedSignature === existingSignature) {
+          setValidationState('verified');
+        } else {
+          setValidationState('unverified');
+        }
+      }
+    } catch (e) {
+      console.error('Verification error:', e);
+      setValidationState('unverified');
     }
   };
 
@@ -128,6 +196,7 @@ const JWTDecoder = () => {
   useEffect(() => {
     if (jwt) {
       decodeJWT(jwt);
+      verifySignature();
     } else {
       setHeader('');
       setPayload('');
@@ -137,14 +206,21 @@ const JWTDecoder = () => {
     }
   }, [jwt]);
 
-  // Handle component edits
+  // Handle component edits - update JWT in real-time
   useEffect(() => {
     if (header && payload) {
-      encodeJWT();
+      encodeJWTWithoutSignature();
     }
-  }, [header, payload, secret]);
+  }, [header, payload]);
 
-  // Countdown timer
+  // Verify signature when secret changes
+  useEffect(() => {
+    if (secret && jwt) {
+      verifySignature();
+    } else if (jwt && validationState !== 'invalid') {
+      setValidationState('unverified');
+    }
+  }, [secret]);
   useEffect(() => {
     if (timeRemaining === null || timeRemaining <= 0) return;
     
@@ -221,20 +297,30 @@ const JWTDecoder = () => {
   return (
     <div className={`min-h-screen ${darkMode ? 'bg-gray-900 text-white' : 'bg-gray-50 text-gray-900'} transition-colors`}>
       {/* Header */}
-      <div className="text-center py-8 px-4 border-b border-gray-300 dark:border-gray-700">
-        <div className="flex justify-end max-w-7xl mx-auto mb-4">
-          <button
-            onClick={() => setDarkMode(!darkMode)}
-            className={`p-2 rounded-lg ${darkMode ? 'bg-gray-800 hover:bg-gray-700' : 'bg-white hover:bg-gray-100'} transition-colors`}
-          >
-            {darkMode ? <Sun size={20} /> : <Moon size={20} />}
-          </button>
-        </div>
-        <h1 className="text-4xl font-bold mb-2">JWT Decoder/Encoder</h1>
-        <p className={`${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-          Decode and encode JSON Web Tokens in real-time
-        </p>
-      </div>
+<div className="text-center py-8 px-4 border-b border-gray-300 dark:border-gray-700">
+  <div className="flex items-center justify-center gap-4 max-w-7xl mx-auto">
+    <h1 className="text-4xl font-bold">
+      JWT Decoder/Encoder
+    </h1>
+
+    <button
+      onClick={() => setDarkMode(!darkMode)}
+      className={`p-2 rounded-lg ${
+        darkMode
+          ? 'bg-gray-800 hover:bg-gray-700'
+          : 'bg-white hover:bg-gray-100'
+      } transition-colors`}
+      aria-label="Toggle dark mode"
+    >
+      {darkMode ? <Sun size={20} /> : <Moon size={20} />}
+    </button>
+  </div>
+
+  <p className={`${darkMode ? 'text-gray-400' : 'text-gray-600'} mt-2`}>
+    Decode and encode JSON Web Tokens in real-time
+  </p>
+</div>
+
 
       {/* Main Content */}
       <div className="max-w-7xl mx-auto p-4 md:p-8">
@@ -294,6 +380,17 @@ const JWTDecoder = () => {
                   <span className={`ml-auto font-mono ${timeRemaining > 0 ? 'text-green-500' : 'text-red-500'}`}>
                     {formatTime(timeRemaining)}
                   </span>
+                </div>
+              </div>
+            )}
+
+            {showGenerateSuccess && (
+              <div className={`mt-4 p-4 rounded-lg ${
+                darkMode ? 'bg-gray-800' : 'bg-white'
+              } border border-green-500`}>
+                <div className="flex items-center gap-2">
+                  <div className="w-5 h-5 rounded-full bg-green-500 flex items-center justify-center text-white text-sm">✓</div>
+                  <span className="font-semibold text-green-500">JWT Generated Successfully!</span>
                 </div>
               </div>
             )}
@@ -386,13 +483,28 @@ const JWTDecoder = () => {
                 onChange={(e) => setSecret(e.target.value)}
                 placeholder="Enter secret key to verify/sign JWT"
                 className={`w-full p-4 rounded-lg font-mono text-sm border ${
-                  darkMode ? 'bg-gray-800 text-white border-gray-700' : 'bg-white text-gray-900 border-gray-300'
+                  darkMode ? 'bg-gray-800 text-white border-gray-700 placeholder:text-gray-500' : 'bg-white text-gray-900 border-gray-300 placeholder:text-gray-400'
                 } focus:outline-none focus:border-cyan-500`}
               />
-              {/* {secret && signature && (
-                <div className={`mt-2 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                  <div className="font-semibold mb-1">Generated Signature:</div>
-                  <div className="p-2 rounded bg-gray-100 dark:bg-gray-800 font-mono break-all">
+              
+              <button
+                onClick={encodeJWT}
+                disabled={!header || !payload || !secret}
+                className={`mt-3 w-full py-3 rounded-lg font-semibold transition-colors ${
+                  !header || !payload || !secret
+                    ? darkMode ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                    : darkMode ? 'bg-cyan-600 hover:bg-cyan-700 text-white' : 'bg-cyan-500 hover:bg-cyan-600 text-white'
+                }`}
+              >
+                Generate JWT
+              </button>
+              
+              {/* {signature && (
+                <div className={`mt-3 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                  <div className="font-semibold mb-1">Current Signature:</div>
+                  <div className={`p-2 rounded font-mono break-all ${
+                    darkMode ? 'bg-gray-800' : 'bg-gray-100'
+                  }`}>
                     {signature}
                   </div>
                 </div>
